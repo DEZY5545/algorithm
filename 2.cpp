@@ -1,29 +1,11 @@
-/**
- * balanced_trees_complete.c
- *
- * Balanced Trees Performance Comparison + Structure Visualization
- * Supports: BST, AVL, Red-Black, Order-5 B-Tree
- *
- * Features:
- *   1. Performance test with random large data.
- *   2. Interactive tree operations: insert, delete, print structures.
- *
- * B-Tree implementation follows strict M-way B-tree definition.
- * M = 5, MAX_KEYS = 4, MIN_KEYS = 2.
- * Insert ignores duplicates; deletion uses bottom‑up underflow handling.
- */
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <string.h>
-#include <ctype.h>
 
 /* ============================================================================
  * 0. Cross-platform high-precision timer & utilities
  * ============================================================================ */
 
-#ifdef _WIN32
 #include <windows.h>
 double get_time_in_seconds() {
     LARGE_INTEGER freq, time;
@@ -31,14 +13,6 @@ double get_time_in_seconds() {
     QueryPerformanceCounter(&time);
     return (double)time.QuadPart / freq.QuadPart;
 }
-#else
-#include <time.h>
-double get_time_in_seconds() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
-}
-#endif
 
 void* safe_malloc(size_t size) {
     void* ptr = malloc(size);
@@ -73,47 +47,47 @@ typedef struct BSTNode {
 BSTNode* create_bst_node(double key) {
     BSTNode* node = (BSTNode*)safe_malloc(sizeof(BSTNode));
     node->key = key;
-    node->left = node->right = NULL;
+    node->left = node->right = NULL;    //根节点初始化
     return node;
 }
 
 BSTNode* bst_insert(BSTNode* root, double key) {
-    if (root == NULL) return create_bst_node(key);
+    if (root == NULL) return create_bst_node(key);    //空树则建立根节点
     if (key < root->key)
         root->left = bst_insert(root->left, key);
     else if (key > root->key)
-        root->right = bst_insert(root->right, key);
+        root->right = bst_insert(root->right, key);    //左右子树嵌套插入
     return root;
 }
 
 BSTNode* bst_search(BSTNode* root, double key) {
-    if (root == NULL || root->key == key) return root;
+    if (root == NULL || root->key == key) return root;      //空树或找到则返回root
     if (key < root->key) return bst_search(root->left, key);
-    return bst_search(root->right, key);
+    return bst_search(root->right, key);        //左右子树嵌套查找
 }
 
 BSTNode* bst_find_min(BSTNode* root) {
-    while (root && root->left) root = root->left;
+    while (root && root->left) root = root->left;       //循环寻找左子树
     return root;
 }
 
 BSTNode* bst_delete(BSTNode* root, double key) {
-    if (root == NULL) return NULL;
+    if (root == NULL) return NULL;      //空树返回NULL
     if (key < root->key) {
         root->left = bst_delete(root->left, key);
     } else if (key > root->key) {
-        root->right = bst_delete(root->right, key);
-    } else {
-        if (root->left == NULL) {
+        root->right = bst_delete(root->right, key);     //左右子树嵌套删除
+    } else {        //需要删除root
+        if (root->left == NULL) {       //左子树空则上移右子树，free（root）
             BSTNode* temp = root->right;
             free(root);
             return temp;
-        } else if (root->right == NULL) {
+        } else if (root->right == NULL) {       //右子树空则上移左子树，free（root）
             BSTNode* temp = root->left;
             free(root);
             return temp;
         }
-        BSTNode* temp = bst_find_min(root->right);
+        BSTNode* temp = bst_find_min(root->right);      //都有则找右子树的min，更新为root并删除min
         root->key = temp->key;
         root->right = bst_delete(root->right, temp->key);
     }
@@ -123,8 +97,8 @@ BSTNode* bst_delete(BSTNode* root, double key) {
 void bst_free(BSTNode* root) {
     if (root) {
         bst_free(root->left);
-        bst_free(root->right);
-        free(root);
+        bst_free(root->right);      //嵌套释放左右子树
+        free(root);     //释放根节点
     }
 }
 
@@ -135,7 +109,7 @@ static void print_bst_subtree(BSTNode* node, double parent_key, int is_root) {
     else
         printf("  [BST] Node: %.2f, Parent: %.2f\n", node->key, parent_key);
     print_bst_subtree(node->left,  node->key, 0);
-    print_bst_subtree(node->right, node->key, 0);
+    print_bst_subtree(node->right, node->key, 0);       //嵌套打印左右子树
 }
 
 void print_bst_structure(BSTNode* root) {
@@ -155,18 +129,18 @@ typedef struct AVLNode {
 } AVLNode;
 
 int avl_height(AVLNode* n) { return n ? n->height : 0; }
-int avl_balance(AVLNode* n) { return n ? avl_height(n->left) - avl_height(n->right) : 0; }
+int avl_balance(AVLNode* n) { return n ? avl_height(n->left) - avl_height(n->right) : 0; }      //左height-右height
 int max_int(int a, int b) { return a > b ? a : b; }
 
 AVLNode* create_avl_node(double key) {
     AVLNode* node = (AVLNode*)safe_malloc(sizeof(AVLNode));
     node->key = key;
     node->height = 1;
-    node->left = node->right = NULL;
+    node->left = node->right = NULL;        //初始化根节点
     return node;
 }
 
-AVLNode* avl_right_rotate(AVLNode* y) {
+AVLNode* avl_right_rotate(AVLNode* y) {     //找y的左子树和左子树的右，更新参数
     AVLNode* x = y->left;
     AVLNode* T2 = x->right;
     x->right = y;
@@ -176,7 +150,7 @@ AVLNode* avl_right_rotate(AVLNode* y) {
     return x;
 }
 
-AVLNode* avl_left_rotate(AVLNode* x) {
+AVLNode* avl_left_rotate(AVLNode* x) {      //找x的右子树和右子树的左，更新参数
     AVLNode* y = x->right;
     AVLNode* T2 = y->left;
     y->left = x;
@@ -187,15 +161,15 @@ AVLNode* avl_left_rotate(AVLNode* x) {
 }
 
 AVLNode* avl_insert(AVLNode* root, double key) {
-    if (!root) return create_avl_node(key);
+    if (!root) return create_avl_node(key);     //空树则插入
     if (key < root->key)
         root->left = avl_insert(root->left, key);
     else if (key > root->key)
-        root->right = avl_insert(root->right, key);
+        root->right = avl_insert(root->right, key);     //左右子树嵌套插入
     else return root;
 
     root->height = 1 + max_int(avl_height(root->left), avl_height(root->right));
-    int bal = avl_balance(root);
+    int bal = avl_balance(root);        //更新height后算平衡因子
 
     if (bal > 1 && key < root->left->key) return avl_right_rotate(root);
     if (bal < -1 && key > root->right->key) return avl_left_rotate(root);
@@ -530,15 +504,15 @@ void print_rb_structure(RBNode* root) {
 }
 
 /* ============================================================================
- * 4. Order-5 B-Tree (bottom‑up deletion, duplicates ignored)
+ * 4. Order-5 B-Tree
  * ============================================================================ */
 #define M 5
-#define MAX_KEYS (M - 1)          // 4
-#define MIN_KEYS ((M + 1) / 2 - 1) // 2
+#define MAX_KEYS (M - 1)          //4
+#define MIN_KEYS ((M + 1) / 2 - 1) //2
 
 typedef struct BTreeNode {
     int num_keys;
-    double keys[M];               // extra slot for temporary overflow during split
+    double keys[M];               //extra slot for temporary overflow during split
     struct BTreeNode* children[M + 1];
     bool is_leaf;
 } BTreeNode;
@@ -547,76 +521,73 @@ BTreeNode* create_btree_node(bool is_leaf) {
     BTreeNode* node = (BTreeNode*)safe_malloc(sizeof(BTreeNode));
     node->num_keys = 0;
     node->is_leaf = is_leaf;
-    for (int i = 0; i <= M; i++) node->children[i] = NULL;
+    for (int i = 0; i <= M; i++) node->children[i] = NULL;      //初始化子节点
     return node;
 }
 
 bool btree_search(BTreeNode* root, double key) {
-    if (!root) return false;
+    if (!root) return false;        //空树返回false
     int i = 0;
     while (i < root->num_keys && key > root->keys[i]) i++;
-    if (i < root->num_keys && key == root->keys[i]) return true;
-    if (root->is_leaf) return false;
-    return btree_search(root->children[i], key);
+    if (i < root->num_keys && key == root->keys[i]) return true;        //若没遍历完就找到值就返回true
+    if (root->is_leaf) return false;        //遍历到叶子了还没找到返回false
+    return btree_search(root->children[i], key);        //子节点嵌套查找
 }
 
-/* ---------- Insertion (unchanged, but skips duplicates) ---------- */
-static bool btree_insert_into_leaf(BTreeNode* leaf, double key) {
+/* ---------- Insertion---------- */
+static bool btree_insert_into_leaf(BTreeNode* leaf, double key) {       //插入叶子节点
     int i = leaf->num_keys - 1;
     while (i >= 0 && leaf->keys[i] > key) {
         leaf->keys[i + 1] = leaf->keys[i];
         i--;
     }
-    // check for duplicate
-    if (i >= 0 && leaf->keys[i] == key) return false;   // duplicate, ignore
+    if (i >= 0 && leaf->keys[i] == key) return false;   //发现相同值，重复插入，return false
     leaf->keys[i + 1] = key;
-    leaf->num_keys++;
-    return leaf->num_keys > MAX_KEYS;
+    leaf->num_keys++;       //插入并更新参数
+    return leaf->num_keys > MAX_KEYS;       //检查是否合法
 }
 
 static BTreeNode* btree_split_node(BTreeNode* node, double* promoted_key) {
-    int mid = (node->num_keys - 1) / 2;
+    int mid = (node->num_keys - 1) / 2;     //中位数
     *promoted_key = node->keys[mid];
 
     BTreeNode* right = create_btree_node(node->is_leaf);
     right->num_keys = node->num_keys - mid - 1;
-    for (int i = 0; i < right->num_keys; i++)
+    for (int i = 0; i < right->num_keys; i++)       //分裂参数
         right->keys[i] = node->keys[mid + 1 + i];
-    if (!node->is_leaf) {
+    if (!node->is_leaf) {       //若node不是叶子，则还要分裂子节点
         for (int i = 0; i <= right->num_keys; i++)
             right->children[i] = node->children[mid + 1 + i];
     }
-    node->num_keys = mid;
-    return right;
+    node->num_keys = mid;       //更新node参数
+    return right;       //返回建好的节点
 }
 
 static BTreeNode* btree_insert_rec(BTreeNode* node, double key,
                                    bool* split, double* promoted_key, BTreeNode** promoted_child) {
     if (node->is_leaf) {
         bool overflow = btree_insert_into_leaf(node, key);
-        if (!overflow) {
+        if (!overflow) {        //合法返回即可
             *split = false;
             return node;
         }
-        *split = true;
+        *split = true;      //不合法确定要分裂
         *promoted_child = btree_split_node(node, promoted_key);
         return node;
     } else {
         int i = 0;
         while (i < node->num_keys && key > node->keys[i]) i++;
-        // duplicate in internal node? should not happen because we skip on leaf,
-        // but check anyway
         if (i < node->num_keys && key == node->keys[i]) {
             *split = false;
-            return node;   // duplicate, ignore
+            return node;   //发现重复，忽视即可
         }
         BTreeNode* child = node->children[i];
         bool child_split;
         double child_promoted_key;
         BTreeNode* child_promoted_child;
         btree_insert_rec(child, key, &child_split, &child_promoted_key, &child_promoted_child);
-
-        if (!child_split) {
+        //嵌套子节点插入
+        if (!child_split) {     //合法返回即可
             *split = false;
             return node;
         }
@@ -627,19 +598,19 @@ static BTreeNode* btree_insert_rec(BTreeNode* node, double key,
         for (int j = node->num_keys; j > i + 1; j--)
             node->children[j] = node->children[j - 1];
         node->children[i + 1] = child_promoted_child;
-
-        if (node->num_keys <= MAX_KEYS) {
+        //更新node的键和子节点
+        if (node->num_keys <= MAX_KEYS) {       //合法返回node即可
             *split = false;
             return node;
         }
         *split = true;
         *promoted_child = btree_split_node(node, promoted_key);
-        return node;
+        return node;        //不合法就拿到分裂的字节点传给上一层嵌套
     }
 }
 
 BTreeNode* btree_insert(BTreeNode* root, double key) {
-    if (!root) {
+    if (!root) {        //空树初始化根节点
         root = create_btree_node(true);
         root->keys[0] = key;
         root->num_keys = 1;
@@ -651,7 +622,7 @@ BTreeNode* btree_insert(BTreeNode* root, double key) {
     BTreeNode* promoted_child;
     root = btree_insert_rec(root, key, &split, &promoted_key, &promoted_child);
 
-    if (split) {
+    if (split) {        //如果需要分裂
         BTreeNode* new_root = create_btree_node(false);
         new_root->keys[0] = promoted_key;
         new_root->num_keys = 1;
@@ -667,13 +638,13 @@ static int btree_find_key(BTreeNode* node, double key) {
     int idx = 0;
     while (idx < node->num_keys && node->keys[idx] < key) idx++;
     return idx;
-}
+}       //找到并返回键
 
 static void btree_remove_from_leaf(BTreeNode* node, int idx) {
     for (int i = idx + 1; i < node->num_keys; i++)
         node->keys[i - 1] = node->keys[i];
     node->num_keys--;
-}
+}       //删除叶子上的对应值
 
 static double btree_get_predecessor(BTreeNode* node, int idx) {
     BTreeNode* cur = node->children[idx];
@@ -726,7 +697,6 @@ static void btree_borrow_from_right(BTreeNode* node, int idx) {
     right_sibling->num_keys--;
 }
 
-// Merge child at idx with right sibling (idx+1). Returns the merged node.
 static BTreeNode* btree_merge(BTreeNode* node, int idx) {
     BTreeNode* left_child = node->children[idx];
     BTreeNode* right_child = node->children[idx + 1];
@@ -742,7 +712,7 @@ static BTreeNode* btree_merge(BTreeNode* node, int idx) {
     }
     left_child->num_keys += right_child->num_keys;
 
-    // Remove key and right child from parent
+
     for (int i = idx; i < node->num_keys - 1; i++)
         node->keys[i] = node->keys[i + 1];
     for (int i = idx + 1; i < node->num_keys; i++)
@@ -751,11 +721,9 @@ static BTreeNode* btree_merge(BTreeNode* node, int idx) {
 
     free(right_child);
 
-    // If the merged node exceeds capacity, split it and re‑insert promoted key
     if (left_child->num_keys > MAX_KEYS) {
         double promoted_key;
         BTreeNode* new_right = btree_split_node(left_child, &promoted_key);
-        // Insert promoted_key and new_right back into parent at index idx
         for (int i = node->num_keys; i > idx; i--)
             node->keys[i] = node->keys[i - 1];
         node->keys[idx] = promoted_key;
@@ -767,7 +735,6 @@ static BTreeNode* btree_merge(BTreeNode* node, int idx) {
     return left_child;
 }
 
-// Ensure child at index idx has at least MIN_KEYS+1 keys by borrowing or merging
 static void btree_fill(BTreeNode* node, int idx) {
     if (idx > 0 && node->children[idx - 1]->num_keys >= MIN_KEYS + 1)
         btree_borrow_from_left(node, idx);
@@ -787,12 +754,10 @@ BTreeNode* btree_delete(BTreeNode* root, double key) {
 
     int idx = btree_find_key(root, key);
 
-    // Key found in this node
     if (idx < root->num_keys && root->keys[idx] == key) {
         if (root->is_leaf) {
             btree_remove_from_leaf(root, idx);
         } else {
-            // Internal node: replace with predecessor or successor
             if (root->children[idx]->num_keys >= MIN_KEYS + 1) {
                 double pred = btree_get_predecessor(root, idx);
                 root->keys[idx] = pred;
@@ -802,33 +767,25 @@ BTreeNode* btree_delete(BTreeNode* root, double key) {
                 root->keys[idx] = succ;
                 root->children[idx + 1] = btree_delete(root->children[idx + 1], succ);
             } else {
-                // Both children are minimal – merge and recurse
                 btree_merge(root, idx);
                 root->children[idx] = btree_delete(root->children[idx], key);
             }
         }
     } else {
-        // Key not in this node, descend to child
-        if (root->is_leaf) return root;   // key doesn't exist
-
-        // Ensure child has enough keys before descent
+        if (root->is_leaf) return root;
         if (root->children[idx]->num_keys == MIN_KEYS) {
             btree_fill(root, idx);
         }
-
-        // After fill, the root could have become empty (when root had only 1 key and merged)
         if (root->num_keys == 0) {
             BTreeNode* new_root = root->children[0];
             free(root);
             return btree_delete(new_root, key);
         }
 
-        // Recalculate idx because fill may have changed the key distribution
         idx = btree_find_key(root, key);
         root->children[idx] = btree_delete(root->children[idx], key);
     }
 
-    // After deletion, if root is empty and not a leaf, shrink tree
     if (root->num_keys == 0 && !root->is_leaf) {
         BTreeNode* new_root = root->children[0];
         free(root);
@@ -995,7 +952,7 @@ void run_tree_operations() {
     double* arr = (double*)safe_malloc(n * sizeof(double));
     while (getchar() != '\n');
 
-    printf("Enter %d real numbers (spaces, commas, or newlines):\n", n);
+    printf("Enter %d real numbers:\n", n);
     char line[4096];
     if (!fgets(line, sizeof(line), stdin)) {
         printf("Input error.\n");
@@ -1091,7 +1048,7 @@ int main() {
     int mode;
     printf("====================================================\n");
     printf("  Balanced Tree Experiment\n");
-    printf("  1 - Performance test (random large data)\n");
+    printf("  1 - Performance test\n");
     printf("  2 - Interactive tree operations\n");
     printf("====================================================\n");
     printf("Choose mode (1 or 2): ");
