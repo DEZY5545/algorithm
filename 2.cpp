@@ -6,20 +6,24 @@
  *
  * Features:
  *   1. Performance test with random large data.
- *   2. Tree structure output: enter an array, print node-parent relationships.
+ *   2. Interactive tree operations: insert, delete, print structures.
  *
- * Note: All allocations use explicit casts to satisfy C++ compilers.
+ * B-Tree implementation follows strict M-way B-tree definition.
+ * M = 5, MAX_KEYS = 4, MIN_KEYS = 2.
+ * Insert ignores duplicates; deletion uses bottom‑up underflow handling.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <stdbool.h>
+#include <string.h>
+#include <ctype.h>
 
 /* ============================================================================
  * 0. Cross-platform high-precision timer & utilities
  * ============================================================================ */
 
-
+#ifdef _WIN32
 #include <windows.h>
 double get_time_in_seconds() {
     LARGE_INTEGER freq, time;
@@ -27,6 +31,15 @@ double get_time_in_seconds() {
     QueryPerformanceCounter(&time);
     return (double)time.QuadPart / freq.QuadPart;
 }
+#else
+#include <time.h>
+double get_time_in_seconds() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+}
+#endif
+
 void* safe_malloc(size_t size) {
     void* ptr = malloc(size);
     if (!ptr) {
@@ -48,7 +61,6 @@ void shuffle_array(double* arr, int n) {
         swap_double(&arr[i], &arr[j]);
     }
 }
-
 
 /* ============================================================================
  * 1. Binary Search Tree (BST)
@@ -116,7 +128,6 @@ void bst_free(BSTNode* root) {
     }
 }
 
-/* --- BST structure printer --- */
 static void print_bst_subtree(BSTNode* node, double parent_key, int is_root) {
     if (!node) return;
     if (is_root)
@@ -133,7 +144,6 @@ void print_bst_structure(BSTNode* root) {
     else print_bst_subtree(root, 0.0, 1);
     printf("---------------------------------------\n");
 }
-
 
 /* ============================================================================
  * 2. AVL Tree
@@ -258,7 +268,6 @@ void avl_free(AVLNode* root) {
     }
 }
 
-/* --- AVL structure printer --- */
 static void print_avl_subtree(AVLNode* node, double parent_key, int is_root) {
     if (!node) return;
     if (is_root)
@@ -275,7 +284,6 @@ void print_avl_structure(AVLNode* root) {
     else print_avl_subtree(root, 0.0, 1);
     printf("---------------------------------------\n");
 }
-
 
 /* ============================================================================
  * 3. Red-Black Tree
@@ -501,7 +509,6 @@ void rb_free(RBNode* root) {
     }
 }
 
-/* --- Red-Black structure printer (uses parent pointers) --- */
 static void print_rb_subtree(RBNode* node) {
     if (node == NIL) return;
     if (node->parent == NIL)
@@ -522,18 +529,17 @@ void print_rb_structure(RBNode* root) {
     printf("--------------------------------------------------\n");
 }
 
-
 /* ============================================================================
- * 4. Order-5 B-Tree
+ * 4. Order-5 B-Tree (bottom‑up deletion, duplicates ignored)
  * ============================================================================ */
-#define M_ORDER 5
-#define MAX_KEYS (M_ORDER - 1)        // 4
-#define MIN_KEYS ((M_ORDER + 1)/2 - 1) // 2
+#define M 5
+#define MAX_KEYS (M - 1)          // 4
+#define MIN_KEYS ((M + 1) / 2 - 1) // 2
 
 typedef struct BTreeNode {
     int num_keys;
-    double keys[MAX_KEYS + 1];
-    struct BTreeNode* children[M_ORDER + 1];
+    double keys[M];               // extra slot for temporary overflow during split
+    struct BTreeNode* children[M + 1];
     bool is_leaf;
 } BTreeNode;
 
@@ -541,7 +547,7 @@ BTreeNode* create_btree_node(bool is_leaf) {
     BTreeNode* node = (BTreeNode*)safe_malloc(sizeof(BTreeNode));
     node->num_keys = 0;
     node->is_leaf = is_leaf;
-    for (int i = 0; i <= M_ORDER; i++) node->children[i] = NULL;
+    for (int i = 0; i <= M; i++) node->children[i] = NULL;
     return node;
 }
 
@@ -554,43 +560,81 @@ bool btree_search(BTreeNode* root, double key) {
     return btree_search(root->children[i], key);
 }
 
-void btree_split_child(BTreeNode* parent, int i, BTreeNode* full_child) {
-    BTreeNode* new_node = create_btree_node(full_child->is_leaf);
-    int mid = MAX_KEYS / 2;   // 2
-    new_node->num_keys = MAX_KEYS - mid - 1; // 1
-    for (int j = 0; j < new_node->num_keys; j++)
-        new_node->keys[j] = full_child->keys[j + mid + 1];
-    if (!full_child->is_leaf) {
-        for (int j = 0; j <= new_node->num_keys; j++)
-            new_node->children[j] = full_child->children[j + mid + 1];
+/* ---------- Insertion (unchanged, but skips duplicates) ---------- */
+static bool btree_insert_into_leaf(BTreeNode* leaf, double key) {
+    int i = leaf->num_keys - 1;
+    while (i >= 0 && leaf->keys[i] > key) {
+        leaf->keys[i + 1] = leaf->keys[i];
+        i--;
     }
-    full_child->num_keys = mid;
-    for (int j = parent->num_keys; j >= i + 1; j--)
-        parent->children[j + 1] = parent->children[j];
-    parent->children[i + 1] = new_node;
-    for (int j = parent->num_keys - 1; j >= i; j--)
-        parent->keys[j + 1] = parent->keys[j];
-    parent->keys[i] = full_child->keys[mid];
-    parent->num_keys++;
+    // check for duplicate
+    if (i >= 0 && leaf->keys[i] == key) return false;   // duplicate, ignore
+    leaf->keys[i + 1] = key;
+    leaf->num_keys++;
+    return leaf->num_keys > MAX_KEYS;
 }
 
-void btree_insert_non_full(BTreeNode* node, double key) {
-    int i = node->num_keys - 1;
+static BTreeNode* btree_split_node(BTreeNode* node, double* promoted_key) {
+    int mid = (node->num_keys - 1) / 2;
+    *promoted_key = node->keys[mid];
+
+    BTreeNode* right = create_btree_node(node->is_leaf);
+    right->num_keys = node->num_keys - mid - 1;
+    for (int i = 0; i < right->num_keys; i++)
+        right->keys[i] = node->keys[mid + 1 + i];
+    if (!node->is_leaf) {
+        for (int i = 0; i <= right->num_keys; i++)
+            right->children[i] = node->children[mid + 1 + i];
+    }
+    node->num_keys = mid;
+    return right;
+}
+
+static BTreeNode* btree_insert_rec(BTreeNode* node, double key,
+                                   bool* split, double* promoted_key, BTreeNode** promoted_child) {
     if (node->is_leaf) {
-        while (i >= 0 && node->keys[i] > key) {
-            node->keys[i + 1] = node->keys[i];
-            i--;
+        bool overflow = btree_insert_into_leaf(node, key);
+        if (!overflow) {
+            *split = false;
+            return node;
         }
-        node->keys[i + 1] = key;
-        node->num_keys++;
+        *split = true;
+        *promoted_child = btree_split_node(node, promoted_key);
+        return node;
     } else {
-        while (i >= 0 && node->keys[i] > key) i--;
-        i++;
-        if (node->children[i]->num_keys == MAX_KEYS) {
-            btree_split_child(node, i, node->children[i]);
-            if (key > node->keys[i]) i++;
+        int i = 0;
+        while (i < node->num_keys && key > node->keys[i]) i++;
+        // duplicate in internal node? should not happen because we skip on leaf,
+        // but check anyway
+        if (i < node->num_keys && key == node->keys[i]) {
+            *split = false;
+            return node;   // duplicate, ignore
         }
-        btree_insert_non_full(node->children[i], key);
+        BTreeNode* child = node->children[i];
+        bool child_split;
+        double child_promoted_key;
+        BTreeNode* child_promoted_child;
+        btree_insert_rec(child, key, &child_split, &child_promoted_key, &child_promoted_child);
+
+        if (!child_split) {
+            *split = false;
+            return node;
+        }
+        for (int j = node->num_keys; j > i; j--)
+            node->keys[j] = node->keys[j - 1];
+        node->keys[i] = child_promoted_key;
+        node->num_keys++;
+        for (int j = node->num_keys; j > i + 1; j--)
+            node->children[j] = node->children[j - 1];
+        node->children[i + 1] = child_promoted_child;
+
+        if (node->num_keys <= MAX_KEYS) {
+            *split = false;
+            return node;
+        }
+        *split = true;
+        *promoted_child = btree_split_node(node, promoted_key);
+        return node;
     }
 }
 
@@ -601,42 +645,194 @@ BTreeNode* btree_insert(BTreeNode* root, double key) {
         root->num_keys = 1;
         return root;
     }
-    if (root->num_keys == MAX_KEYS) {
+
+    bool split;
+    double promoted_key;
+    BTreeNode* promoted_child;
+    root = btree_insert_rec(root, key, &split, &promoted_key, &promoted_child);
+
+    if (split) {
         BTreeNode* new_root = create_btree_node(false);
+        new_root->keys[0] = promoted_key;
+        new_root->num_keys = 1;
         new_root->children[0] = root;
-        btree_split_child(new_root, 0, root);
-        btree_insert_non_full(new_root, key);
+        new_root->children[1] = promoted_child;
         return new_root;
-    } else {
-        btree_insert_non_full(root, key);
-        return root;
     }
+    return root;
 }
 
-int btree_find_key(BTreeNode* node, double key) {
+/* ---------- Deletion helpers ---------- */
+static int btree_find_key(BTreeNode* node, double key) {
     int idx = 0;
     while (idx < node->num_keys && node->keys[idx] < key) idx++;
     return idx;
 }
 
+static void btree_remove_from_leaf(BTreeNode* node, int idx) {
+    for (int i = idx + 1; i < node->num_keys; i++)
+        node->keys[i - 1] = node->keys[i];
+    node->num_keys--;
+}
+
+static double btree_get_predecessor(BTreeNode* node, int idx) {
+    BTreeNode* cur = node->children[idx];
+    while (!cur->is_leaf) cur = cur->children[cur->num_keys];
+    return cur->keys[cur->num_keys - 1];
+}
+
+static double btree_get_successor(BTreeNode* node, int idx) {
+    BTreeNode* cur = node->children[idx + 1];
+    while (!cur->is_leaf) cur = cur->children[0];
+    return cur->keys[0];
+}
+
+static void btree_borrow_from_left(BTreeNode* node, int idx) {
+    BTreeNode* child = node->children[idx];
+    BTreeNode* left_sibling = node->children[idx - 1];
+
+    for (int i = child->num_keys; i > 0; i--)
+        child->keys[i] = child->keys[i - 1];
+    child->num_keys++;
+    child->keys[0] = node->keys[idx - 1];
+    node->keys[idx - 1] = left_sibling->keys[left_sibling->num_keys - 1];
+
+    if (!child->is_leaf) {
+        for (int i = child->num_keys; i > 0; i--)
+            child->children[i] = child->children[i - 1];
+        child->children[0] = left_sibling->children[left_sibling->num_keys];
+    }
+    left_sibling->num_keys--;
+}
+
+static void btree_borrow_from_right(BTreeNode* node, int idx) {
+    BTreeNode* child = node->children[idx];
+    BTreeNode* right_sibling = node->children[idx + 1];
+
+    child->keys[child->num_keys] = node->keys[idx];
+    child->num_keys++;
+    node->keys[idx] = right_sibling->keys[0];
+
+    if (!child->is_leaf) {
+        child->children[child->num_keys] = right_sibling->children[0];
+    }
+
+    for (int i = 1; i < right_sibling->num_keys; i++)
+        right_sibling->keys[i - 1] = right_sibling->keys[i];
+    if (!right_sibling->is_leaf) {
+        for (int i = 1; i <= right_sibling->num_keys; i++)
+            right_sibling->children[i - 1] = right_sibling->children[i];
+    }
+    right_sibling->num_keys--;
+}
+
+// Merge child at idx with right sibling (idx+1). Returns the merged node.
+static BTreeNode* btree_merge(BTreeNode* node, int idx) {
+    BTreeNode* left_child = node->children[idx];
+    BTreeNode* right_child = node->children[idx + 1];
+
+    left_child->keys[left_child->num_keys] = node->keys[idx];
+    left_child->num_keys++;
+
+    for (int i = 0; i < right_child->num_keys; i++)
+        left_child->keys[left_child->num_keys + i] = right_child->keys[i];
+    if (!left_child->is_leaf) {
+        for (int i = 0; i <= right_child->num_keys; i++)
+            left_child->children[left_child->num_keys + i] = right_child->children[i];
+    }
+    left_child->num_keys += right_child->num_keys;
+
+    // Remove key and right child from parent
+    for (int i = idx; i < node->num_keys - 1; i++)
+        node->keys[i] = node->keys[i + 1];
+    for (int i = idx + 1; i < node->num_keys; i++)
+        node->children[i] = node->children[i + 1];
+    node->num_keys--;
+
+    free(right_child);
+
+    // If the merged node exceeds capacity, split it and re‑insert promoted key
+    if (left_child->num_keys > MAX_KEYS) {
+        double promoted_key;
+        BTreeNode* new_right = btree_split_node(left_child, &promoted_key);
+        // Insert promoted_key and new_right back into parent at index idx
+        for (int i = node->num_keys; i > idx; i--)
+            node->keys[i] = node->keys[i - 1];
+        node->keys[idx] = promoted_key;
+        node->num_keys++;
+        for (int i = node->num_keys; i > idx + 1; i--)
+            node->children[i] = node->children[i - 1];
+        node->children[idx + 1] = new_right;
+    }
+    return left_child;
+}
+
+// Ensure child at index idx has at least MIN_KEYS+1 keys by borrowing or merging
+static void btree_fill(BTreeNode* node, int idx) {
+    if (idx > 0 && node->children[idx - 1]->num_keys >= MIN_KEYS + 1)
+        btree_borrow_from_left(node, idx);
+    else if (idx < node->num_keys && node->children[idx + 1]->num_keys >= MIN_KEYS + 1)
+        btree_borrow_from_right(node, idx);
+    else {
+        if (idx > 0)
+            btree_merge(node, idx - 1);
+        else
+            btree_merge(node, idx);
+    }
+}
+
+/* ---------- Main deletion function (bottom‑up recursive) ---------- */
 BTreeNode* btree_delete(BTreeNode* root, double key) {
     if (!root) return NULL;
+
     int idx = btree_find_key(root, key);
+
+    // Key found in this node
     if (idx < root->num_keys && root->keys[idx] == key) {
         if (root->is_leaf) {
-            for (int i = idx + 1; i < root->num_keys; i++)
-                root->keys[i - 1] = root->keys[i];
-            root->num_keys--;
+            btree_remove_from_leaf(root, idx);
         } else {
-            BTreeNode* cur = root->children[idx + 1];
-            while (!cur->is_leaf) cur = cur->children[0];
-            double succ = cur->keys[0];
-            root->keys[idx] = succ;
-            root->children[idx + 1] = btree_delete(root->children[idx + 1], succ);
+            // Internal node: replace with predecessor or successor
+            if (root->children[idx]->num_keys >= MIN_KEYS + 1) {
+                double pred = btree_get_predecessor(root, idx);
+                root->keys[idx] = pred;
+                root->children[idx] = btree_delete(root->children[idx], pred);
+            } else if (root->children[idx + 1]->num_keys >= MIN_KEYS + 1) {
+                double succ = btree_get_successor(root, idx);
+                root->keys[idx] = succ;
+                root->children[idx + 1] = btree_delete(root->children[idx + 1], succ);
+            } else {
+                // Both children are minimal – merge and recurse
+                btree_merge(root, idx);
+                root->children[idx] = btree_delete(root->children[idx], key);
+            }
         }
     } else {
-        if (!root->is_leaf)
-            root->children[idx] = btree_delete(root->children[idx], key);
+        // Key not in this node, descend to child
+        if (root->is_leaf) return root;   // key doesn't exist
+
+        // Ensure child has enough keys before descent
+        if (root->children[idx]->num_keys == MIN_KEYS) {
+            btree_fill(root, idx);
+        }
+
+        // After fill, the root could have become empty (when root had only 1 key and merged)
+        if (root->num_keys == 0) {
+            BTreeNode* new_root = root->children[0];
+            free(root);
+            return btree_delete(new_root, key);
+        }
+
+        // Recalculate idx because fill may have changed the key distribution
+        idx = btree_find_key(root, key);
+        root->children[idx] = btree_delete(root->children[idx], key);
+    }
+
+    // After deletion, if root is empty and not a leaf, shrink tree
+    if (root->num_keys == 0 && !root->is_leaf) {
+        BTreeNode* new_root = root->children[0];
+        free(root);
+        return new_root;
     }
     return root;
 }
@@ -650,7 +846,6 @@ void btree_free(BTreeNode* root) {
     }
 }
 
-/* --- B-Tree structure printer --- */
 static void print_btree_subtree(BTreeNode* node, BTreeNode* parent) {
     if (!node) return;
     printf("  [B-Tree] Node keys: [");
@@ -681,14 +876,13 @@ void print_btree_structure(BTreeNode* root) {
     printf("------------------------------------------------------\n");
 }
 
-
 /* ============================================================================
- * 5. Performance test (original, with explicit casts for C++ compatibility)
+ * 5. Performance test
  * ============================================================================ */
 void run_performance_test() {
-    int N = 100000, M = 50000;
+    int N = 4000, L = 2000;
     printf("=================================================================\n");
-    printf("   Balanced Trees Performance Comparison (N=%d, M=%d)\n", N, M);
+    printf("   Balanced Trees Performance Comparison (N=%d, L=%d)\n", N, L);
     printf("   Unit: Milliseconds (ms)\n");
     printf("=================================================================\n");
     printf("%-10s | %-15s | %-15s | %-15s\n", "Tree Type", "Insert(ms)", "Search(ms)", "Delete(ms)");
@@ -699,9 +893,9 @@ void run_performance_test() {
     for (int i = 0; i < N; i++)
         insert_data[i] = ((double)rand() / RAND_MAX) * 1000000.0;
 
-    double* search_data = (double*)safe_malloc(M * sizeof(double));
-    for (int i = 0; i < M; i++) search_data[i] = insert_data[i];
-    shuffle_array(search_data, M);
+    double* search_data = (double*)safe_malloc(L * sizeof(double));
+    for (int i = 0; i < L; i++) search_data[i] = insert_data[i];
+    shuffle_array(search_data, L);
 
     double start, end, time_ins, time_search, time_del;
 
@@ -713,12 +907,12 @@ void run_performance_test() {
     time_ins = (end - start) * 1000.0;
 
     start = get_time_in_seconds();
-    for (int i = 0; i < M; i++) bst_search(bst_root, search_data[i]);
+    for (int i = 0; i < L; i++) bst_search(bst_root, search_data[i]);
     end = get_time_in_seconds();
     time_search = (end - start) * 1000.0;
 
     start = get_time_in_seconds();
-    for (int i = 0; i < M; i++) bst_root = bst_delete(bst_root, search_data[i]);
+    for (int i = 0; i < L; i++) bst_root = bst_delete(bst_root, search_data[i]);
     end = get_time_in_seconds();
     time_del = (end - start) * 1000.0;
     printf("%-10s | %-15.6f | %-15.6f | %-15.6f\n", "BST", time_ins, time_search, time_del);
@@ -732,12 +926,12 @@ void run_performance_test() {
     time_ins = (end - start) * 1000.0;
 
     start = get_time_in_seconds();
-    for (int i = 0; i < M; i++) avl_search(avl_root, search_data[i]);
+    for (int i = 0; i < L; i++) avl_search(avl_root, search_data[i]);
     end = get_time_in_seconds();
     time_search = (end - start) * 1000.0;
 
     start = get_time_in_seconds();
-    for (int i = 0; i < M; i++) avl_root = avl_delete(avl_root, search_data[i]);
+    for (int i = 0; i < L; i++) avl_root = avl_delete(avl_root, search_data[i]);
     end = get_time_in_seconds();
     time_del = (end - start) * 1000.0;
     printf("%-10s | %-15.6f | %-15.6f | %-15.6f\n", "AVL", time_ins, time_search, time_del);
@@ -751,12 +945,12 @@ void run_performance_test() {
     time_ins = (end - start) * 1000.0;
 
     start = get_time_in_seconds();
-    for (int i = 0; i < M; i++) rb_search(rb_root, search_data[i]);
+    for (int i = 0; i < L; i++) rb_search(rb_root, search_data[i]);
     end = get_time_in_seconds();
     time_search = (end - start) * 1000.0;
 
     start = get_time_in_seconds();
-    for (int i = 0; i < M; i++) rb_delete(&rb_root, search_data[i]);
+    for (int i = 0; i < L; i++) rb_delete(&rb_root, search_data[i]);
     end = get_time_in_seconds();
     time_del = (end - start) * 1000.0;
     printf("%-10s | %-15.6f | %-15.6f | %-15.6f\n", "RB-Tree", time_ins, time_search, time_del);
@@ -770,12 +964,12 @@ void run_performance_test() {
     time_ins = (end - start) * 1000.0;
 
     start = get_time_in_seconds();
-    for (int i = 0; i < M; i++) btree_search(btree_root, search_data[i]);
+    for (int i = 0; i < L; i++) btree_search(btree_root, search_data[i]);
     end = get_time_in_seconds();
     time_search = (end - start) * 1000.0;
 
     start = get_time_in_seconds();
-    for (int i = 0; i < M; i++) btree_root = btree_delete(btree_root, search_data[i]);
+    for (int i = 0; i < L; i++) btree_root = btree_delete(btree_root, search_data[i]);
     end = get_time_in_seconds();
     time_del = (end - start) * 1000.0;
     printf("%-10s | %-15.6f | %-15.6f | %-15.6f\n", "5-B-Tree", time_ins, time_search, time_del);
@@ -786,25 +980,22 @@ void run_performance_test() {
     free(search_data);
 }
 
-
 /* ============================================================================
- * 6. Interactive tree display (with robust input & explicit casts)
+ * 6. Interactive tree operations (mode 2)
  * ============================================================================ */
-void run_tree_display() {
+void run_tree_operations() {
     int n;
-    printf("Enter number of elements: ");
+    printf("Enter number of initial elements: ");
     scanf("%d", &n);
     if (n <= 0) {
         printf("Number must be positive.\n");
         return;
     }
 
-    double* arr = (double*)safe_malloc(n * sizeof(double));   // Fixed: added (double*) cast
-
-    // Clear the newline left by scanf
+    double* arr = (double*)safe_malloc(n * sizeof(double));
     while (getchar() != '\n');
 
-    printf("Enter %d real numbers (you may use spaces, commas, or newlines):\n", n);
+    printf("Enter %d real numbers (spaces, commas, or newlines):\n", n);
     char line[4096];
     if (!fgets(line, sizeof(line), stdin)) {
         printf("Input error.\n");
@@ -812,11 +1003,9 @@ void run_tree_display() {
         return;
     }
 
-    // Replace commas with spaces to help sscanf / strtod
     for (char* p = line; *p; p++)
         if (*p == ',') *p = ' ';
 
-    // Parse the numbers manually
     int count = 0;
     char* ptr = line;
     while (count < n) {
@@ -824,56 +1013,86 @@ void run_tree_display() {
         if (*ptr == '\0') break;
         char* endptr;
         double val = strtod(ptr, &endptr);
-        if (endptr == ptr) break; // no conversion
+        if (endptr == ptr) break;
         arr[count++] = val;
         ptr = endptr;
     }
-
     if (count < n) {
-        printf("Warning: only %d numbers read, filling remaining with 0.0.\n", count);
+        printf("Warning: only %d numbers read, filling rest with 0.0.\n", count);
         for (int i = count; i < n; i++) arr[i] = 0.0;
     }
 
-    printf("\n========== Building trees and printing structures ==========\n");
-
-    /* BST */
     BSTNode* bst_root = NULL;
-    for (int i = 0; i < n; i++) bst_root = bst_insert(bst_root, arr[i]);
-    print_bst_structure(bst_root);
-    bst_free(bst_root);
-
-    /* AVL */
     AVLNode* avl_root = NULL;
-    for (int i = 0; i < n; i++) avl_root = avl_insert(avl_root, arr[i]);
-    print_avl_structure(avl_root);
-    avl_free(avl_root);
-
-    /* Red-Black */
     RBNode* rb_root = NIL;
-    for (int i = 0; i < n; i++) rb_insert(&rb_root, arr[i]);
-    print_rb_structure(rb_root);
-    rb_free(rb_root);
-
-    /* B-Tree */
     BTreeNode* btree_root = NULL;
-    for (int i = 0; i < n; i++) btree_root = btree_insert(btree_root, arr[i]);
-    print_btree_structure(btree_root);
-    btree_free(btree_root);
-
+    for (int i = 0; i < n; i++) {
+        bst_root = bst_insert(bst_root, arr[i]);
+        avl_root = avl_insert(avl_root, arr[i]);
+        rb_insert(&rb_root, arr[i]);
+        btree_root = btree_insert(btree_root, arr[i]);
+    }
     free(arr);
-    printf("========================================================\n");
+
+    int choice;
+    double key;
+    do {
+        printf("\n=== Interactive Tree Operations ===\n");
+        printf("1. Insert a key into all trees\n");
+        printf("2. Delete a key from all trees\n");
+        printf("3. Print current structures of all trees\n");
+        printf("4. Exit to main menu\n");
+        printf("Choose: ");
+        scanf("%d", &choice);
+
+        switch (choice) {
+        case 1:
+            printf("Enter key to insert: ");
+            scanf("%lf", &key);
+            bst_root = bst_insert(bst_root, key);
+            avl_root = avl_insert(avl_root, key);
+            rb_insert(&rb_root, key);
+            btree_root = btree_insert(btree_root, key);
+            printf("Key %.2f inserted.\n", key);
+            break;
+        case 2:
+            printf("Enter key to delete: ");
+            scanf("%lf", &key);
+            bst_root = bst_delete(bst_root, key);
+            avl_root = avl_delete(avl_root, key);
+            rb_delete(&rb_root, key);
+            btree_root = btree_delete(btree_root, key);
+            printf("Key %.2f deleted (if existed).\n", key);
+            break;
+        case 3:
+            print_bst_structure(bst_root);
+            print_avl_structure(avl_root);
+            print_rb_structure(rb_root);
+            print_btree_structure(btree_root);
+            break;
+        case 4:
+            printf("Returning to main menu.\n");
+            break;
+        default:
+            printf("Invalid option.\n");
+        }
+    } while (choice != 4);
+
+    bst_free(bst_root);
+    avl_free(avl_root);
+    rb_free(rb_root);
+    btree_free(btree_root);
 }
 
-
 /* ============================================================================
- * Main: mode selection
+ * Main
  * ============================================================================ */
 int main() {
     int mode;
     printf("====================================================\n");
     printf("  Balanced Tree Experiment\n");
     printf("  1 - Performance test (random large data)\n");
-    printf("  2 - Tree structure output (enter an array)\n");
+    printf("  2 - Interactive tree operations\n");
     printf("====================================================\n");
     printf("Choose mode (1 or 2): ");
     scanf("%d", &mode);
@@ -881,7 +1100,7 @@ int main() {
     if (mode == 1) {
         run_performance_test();
     } else if (mode == 2) {
-        run_tree_display();
+        run_tree_operations();
     } else {
         printf("Invalid choice. Exiting.\n");
     }
